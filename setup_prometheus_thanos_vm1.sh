@@ -1,16 +1,16 @@
 #!/bin/bash
 
 # Variables
-PROMETHEUS_VERSION="2.31.1"
-THANOS_VERSION="v0.23.0"
+PROMETHEUS_VERSION="2.52.0"
+THANOS_VERSION="0.35.0"
 INSTALL_DIR="/opt/prometheus"
 CONFIG_DIR="/etc/prometheus"
 DATA_DIR="/var/lib/prometheus"
-CERT_DIR="/etc/prometheus/certs"
+CERT_DIR="/var/lib/thanos"
 OBJSTORE_CONFIG="$CONFIG_DIR/objstore.yml"
 
 # Create necessary directories
-sudo mkdir -p $INSTALL_DIR $CONFIG_DIR $DATA_DIR $CERT_DIR
+sudo mkdir -p $INSTALL_DIR $CONFIG_DIR $DATA_DIR $CERT_DIR /var/lib/thanos
 
 # Create a Prometheus user
 sudo useradd --no-create-home --shell /bin/false prometheus
@@ -25,10 +25,16 @@ curl -LO https://github.com/thanos-io/thanos/releases/download/$THANOS_VERSION/t
 tar xvf thanos-$THANOS_VERSION.linux-amd64.tar.gz
 sudo mv thanos-$THANOS_VERSION.linux-amd64/* $INSTALL_DIR
 
+# Make Thanos executable
+sudo chmod +x $INSTALL_DIR/thanos
+
 # Create Prometheus configuration file
 cat <<EOF | sudo tee $CONFIG_DIR/prometheus.yml
 global:
   scrape_interval: 15s
+  external_labels:
+    monitor: 'prometheus-vm1'
+    cluster: 'prod'
 
 scrape_configs:
   - job_name: 'prometheus'
@@ -47,7 +53,7 @@ After=network-online.target
 User=prometheus
 Group=prometheus
 Type=simple
-ExecStart=$INSTALL_DIR/prometheus --config.file=$CONFIG_DIR/prometheus.yml --storage.tsdb.path=$DATA_DIR
+ExecStart=$INSTALL_DIR/prometheus --config.file=$CONFIG_DIR/prometheus.yml --storage.tsdb.path=$DATA_DIR --storage.tsdb.min-block-duration=2h --storage.tsdb.max-block-duration=2h --storage.tsdb.retention.time=1d --storage.tsdb.allow-overlapping-blocks
 
 [Install]
 WantedBy=multi-user.target
@@ -80,10 +86,13 @@ EOF
 # Create the Thanos storage directory
 sudo mkdir -p /var/lib/thanos
 
-# Copy TLS certificates to the appropriate directories
-sudo cp server.crt server.key ca.crt $CERT_DIR/
+# Create a valid thanos.shipper.json file if it does not exist
+if [ ! -f "$DATA_DIR/thanos.shipper.json" ]; then
+  echo '{"version": 1}' | sudo tee $DATA_DIR/thanos.shipper.json > /dev/null
+fi
+sudo chown prometheus:prometheus $DATA_DIR/thanos.shipper.json
 
-# Set permissions
+# Ensure all directories and files have the correct permissions
 sudo chown -R prometheus:prometheus $INSTALL_DIR $CONFIG_DIR $DATA_DIR $CERT_DIR /var/lib/thanos
 
 # Reload systemd and start services

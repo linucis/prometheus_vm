@@ -4,7 +4,7 @@
 THANOS_VERSION="v0.23.0"
 INSTALL_DIR="/opt/thanos"
 CONFIG_DIR="/etc/thanos"
-CERT_DIR="/etc/thanos/certs"
+CERT_DIR="/var/lib/thanos"
 OBJSTORE_CONFIG="$CONFIG_DIR/objstore.yml"
 NGINX_CONFIG="/etc/nginx/nginx.conf"
 HTPASSWD_FILE="/etc/nginx/.htpasswd"
@@ -89,8 +89,10 @@ EOF
 # Create the Thanos storage directory
 sudo mkdir -p /var/lib/thanos
 
-# Copy TLS certificates to the appropriate directories
-sudo cp server.crt server.key ca.crt $CERT_DIR/
+# Copy TLS certificates to the appropriate directories, but only if source and destination are different
+[ "$CERT_DIR/server.crt" != "$CERT_DIR/server.crt" ] && sudo cp $CERT_DIR/server.crt $CERT_DIR/server.crt
+[ "$CERT_DIR/server.key" != "$CERT_DIR/server.key" ] && sudo cp $CERT_DIR/server.key $CERT_DIR/server.key
+[ "$CERT_DIR/ca.crt" != "$CERT_DIR/ca.crt" ] && sudo cp $CERT_DIR/ca.crt $CERT_DIR/ca.crt
 
 # Set permissions
 sudo chown -R prometheus:prometheus $INSTALL_DIR $CONFIG_DIR $CERT_DIR /var/lib/thanos
