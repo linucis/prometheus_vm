@@ -1,25 +1,31 @@
 #!/bin/bash
 
 # Variables
-THANOS_VERSION="v0.23.0"
+THANOS_VERSION="0.35.0"
 INSTALL_DIR="/opt/thanos"
 CONFIG_DIR="/etc/thanos"
 CERT_DIR="/var/lib/thanos"
 OBJSTORE_CONFIG="$CONFIG_DIR/objstore.yml"
+NGINX_VERSION="1.24.0" # specify the version of NGINX you want to install
+NGINX_INSTALL_DIR="/opt/nginx"
 NGINX_CONFIG="/etc/nginx/nginx.conf"
 HTPASSWD_FILE="/etc/nginx/.htpasswd"
 
 # Create necessary directories
-sudo mkdir -p $INSTALL_DIR $CONFIG_DIR $CERT_DIR
+sudo mkdir -p $INSTALL_DIR $CONFIG_DIR $CERT_DIR $NGINX_INSTALL_DIR
 
 # Download Thanos
-curl -LO https://github.com/thanos-io/thanos/releases/download/$THANOS_VERSION/thanos-$THANOS_VERSION.linux-amd64.tar.gz
+curl -LO https://github.com/thanos-io/thanos/releases/download/v$THANOS_VERSION/thanos-$THANOS_VERSION.linux-amd64.tar.gz
 tar xvf thanos-$THANOS_VERSION.linux-amd64.tar.gz
 sudo mv thanos-$THANOS_VERSION.linux-amd64/* $INSTALL_DIR
 
-# Install NGINX
-sudo yum install -y epel-release
-sudo yum install -y nginx httpd-tools
+# Download and install NGINX
+curl -LO http://nginx.org/download/nginx-$NGINX_VERSION.tar.gz
+tar xvf nginx-$NGINX_VERSION.tar.gz
+cd nginx-$NGINX_VERSION
+./configure --prefix=$NGINX_INSTALL_DIR
+make
+sudo make install
 
 # Create systemd service file for Thanos Store
 cat <<EOF | sudo tee /etc/systemd/system/thanos-store.service
@@ -49,19 +55,26 @@ After=network-online.target
 User=prometheus
 Group=prometheus
 Type=simple
-ExecStart=$INSTALL_DIR/thanos query --http-address=0.0.0.0:10902 --store=<PROMETHEUS1_VM_IP>:10901 --store=<PROMETHEUS2_VM_IP>:10903 --store=thanos-store:10904 --grpc-client-tls-cert=$CERT_DIR/server.crt --grpc-client-tls-key=$CERT_DIR/server.key --grpc-client-tls-ca=$CERT_DIR/ca.crt
+ExecStart=$INSTALL_DIR/thanos query --http-address=0.0.0.0:10902 --store=172.18.115.6:10901 --store=172.18.115.7:10903 --store=thanos-store:10904 --grpc-client-tls-cert=$CERT_DIR/server.crt --grpc-client-tls-key=$CERT_DIR/server.key --grpc-client-tls-ca=$CERT_DIR/ca.crt
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# Create NGINX configuration file
+# Create NGINX configuration directory and file
+sudo mkdir -p /etc/nginx
 cat <<EOF | sudo tee $NGINX_CONFIG
 events {}
 
 http {
   server {
-    listen 80;
+    listen 443 ssl;
+    server_name _;
+
+    ssl_certificate $CERT_DIR/server.crt;
+    ssl_certificate_key $CERT_DIR/server.key;
+    ssl_client_certificate $CERT_DIR/ca.crt;
+    ssl_verify_client on;
 
     location / {
       proxy_pass http://localhost:10902;
@@ -77,7 +90,8 @@ http {
 EOF
 
 # Set up basic authentication for NGINX
-sudo htpasswd -bc $HTPASSWD_FILE <username> <password>
+sudo yum install -y httpd-tools
+sudo htpasswd -bc $HTPASSWD_FILE grafana TPLkdZ4290BeQ
 
 # Create objstore.yml for local filesystem
 cat <<EOF | sudo tee $OBJSTORE_CONFIG
@@ -103,5 +117,24 @@ sudo systemctl start thanos-store
 sudo systemctl enable thanos-store
 sudo systemctl start thanos-querier
 sudo systemctl enable thanos-querier
+
+# Create systemd service file for NGINX
+cat <<EOF | sudo tee /etc/systemd/system/nginx.service
+[Unit]
+Description=The NGINX HTTP and reverse proxy server
+After=network.target remote-fs.target nss-lookup.target
+
+[Service]
+Type=forking
+ExecStartPre=$NGINX_INSTALL_DIR/sbin/nginx -t
+ExecStart=$NGINX_INSTALL_DIR/sbin/nginx
+ExecReload=/bin/kill -s HUP \$MAINPID
+ExecStop=/bin/kill -s QUIT \$MAINPID
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 sudo systemctl start nginx
 sudo systemctl enable nginx
